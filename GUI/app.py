@@ -8,7 +8,7 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtGui import QFont, QColor, QPalette
 from PyQt5.QtCore import Qt
 
-from worker import WorkerThread
+from .worker import WorkerThread  # Ensure WorkerThread is correctly imported
 
 class App(QWidget):
     def __init__(self):
@@ -19,11 +19,15 @@ class App(QWidget):
         self.width = 800
         self.height = 600
 
-        # Initialize file paths
+        # Initialize file paths with absolute paths
+        self.base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         self.product_type_path = ""
         self.sample_file_path = ""
-        self.previous_categorized_path = os.path.join(os.path.dirname(__file__), '../categorized_products.xlsx')
-        self.output_path = os.path.join(os.path.dirname(__file__), '../processed_output.xlsx')
+        self.output_path = os.path.join(self.base_dir, 'processed_output.xlsx')
+
+        # In-Memory Storage for Categorized Products and Results
+        self.categorized_df = None
+        self.results_df = None
 
         self.initUI()
 
@@ -54,12 +58,9 @@ class App(QWidget):
         self.pt_browse_btn = QPushButton("Browse")
         self.pt_browse_btn.setFont(button_font)
         self.pt_browse_btn.clicked.connect(self.browse_product_type)
-        self.use_prev_checkbox = QCheckBox("Use Previous Categorized File")
-        self.use_prev_checkbox.setFont(label_font)
         pt_layout.addWidget(pt_label, stretch=1)
         pt_layout.addWidget(self.pt_path_label, stretch=3)
         pt_layout.addWidget(self.pt_browse_btn, stretch=1)
-        pt_layout.addWidget(self.use_prev_checkbox, stretch=2)
         main_layout.addLayout(pt_layout)
 
         # Sample File Selection
@@ -127,32 +128,38 @@ class App(QWidget):
         fileName, _ = QFileDialog.getOpenFileName(self, "Select Product Type Excel File", "",
                                                   "Excel Files (*.xlsx *.xls)", options=options)
         if fileName:
-            self.product_type_path = fileName
+            self.product_type_path = os.path.abspath(fileName)
             self.pt_path_label.setText(os.path.basename(fileName))
-            if self.use_prev_checkbox.isChecked():
-                self.use_prev_checkbox.setChecked(False)  # Uncheck if a new file is selected
 
     def browse_sample_file(self):
         options = QFileDialog.Options()
         fileName, _ = QFileDialog.getOpenFileName(self, "Select Sample Excel File", "",
                                                   "Excel Files (*.xlsx *.xls)", options=options)
         if fileName:
-            self.sample_file_path = fileName
+            self.sample_file_path = os.path.abspath(fileName)
             self.sample_path_label.setText(os.path.basename(fileName))
 
     def process_files(self):
-        use_previous = self.use_prev_checkbox.isChecked()
-        if use_previous:
-            if not os.path.exists(self.previous_categorized_path):
-                QMessageBox.critical(self, "Error", f"Previous categorized file '{self.previous_categorized_path}' not found.")
-                return
-            if not self.sample_file_path:
-                QMessageBox.critical(self, "Error", "Please select a sample file.")
+        if self.product_type_path and not self.categorized_df:
+            # User has uploaded a Product Type file and categorized_df is not set
+            use_previous = False
+        elif self.categorized_df and self.sample_file_path:
+            # User wants to process a Sample file using existing categorized_df
+            use_previous = True
+        elif self.product_type_path and self.categorized_df:
+            # User wants to re-categorize with a new Product Type file
+            reply = QMessageBox.question(
+                self, 'Confirm Overwrite',
+                "Uploading a new Product Type file will overwrite existing categorized data. Continue?",
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.No
+            )
+            if reply == QMessageBox.Yes:
+                use_previous = False
+            else:
                 return
         else:
-            if not self.product_type_path or not self.sample_file_path:
-                QMessageBox.critical(self, "Error", "Please select both product type and sample files.")
-                return
+            QMessageBox.critical(self, "Error", "Please select the appropriate files.")
+            return
 
         self.process_btn.setEnabled(False)
         self.status_label.setText("Processing... Please wait.")
@@ -160,12 +167,12 @@ class App(QWidget):
             self.product_type_path,
             self.sample_file_path,
             use_previous,
-            self.previous_categorized_path,
-            self.output_path
+            self.categorized_df  # Pass the in-memory DataFrame
         )
         self.worker.progress.connect(self.update_status)
         self.worker.finished.connect(self.processing_finished)
         self.worker.error.connect(self.processing_error)
+        self.worker.results_ready.connect(self.update_results_df)  # Connect the new signal
         self.worker.start()
 
     def update_status(self, message):
@@ -182,15 +189,24 @@ class App(QWidget):
         self.process_btn.setEnabled(True)
         QMessageBox.critical(self, "Error", error_message)
 
+    def update_results_df(self, results_df):
+        """
+        Slot to receive the processed results DataFrame from the worker thread.
+        """
+        self.results_df = results_df
+        print("Processed DataFrame updated in memory.")
+
     def download_output(self):
+        if self.results_df is None:
+            QMessageBox.critical(self, "Error", "No processed results available to download.")
+            return
+
         options = QFileDialog.Options()
         savePath, _ = QFileDialog.getSaveFileName(self, "Save Output File", "processed_output.xlsx",
                                                   "Excel Files (*.xlsx *.xls)", options=options)
         if savePath:
             try:
-                from pandas import read_excel
-                df = read_excel(self.output_path)
-                df.to_excel(savePath, index=False)
+                self.results_df.to_excel(os.path.abspath(savePath), index=False)
                 QMessageBox.information(self, "Success", f"File saved to {savePath}")
             except Exception as e:
                 QMessageBox.critical(self, "Error", f"Failed to save file: {str(e)}")

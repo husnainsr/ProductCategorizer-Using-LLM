@@ -9,8 +9,10 @@ from openai import OpenAI
 
 from utils.helpers import clean_text, remove_null
 
-# Load environment variables
-load_dotenv(os.path.join(os.path.dirname(__file__), '../config/keys.env'))
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+CONFIG_PATH = os.path.join(BASE_DIR, 'config', 'keys.env')
+
+load_dotenv(CONFIG_PATH)
 
 def extract_product_info(text):
     """Extract product information using OpenAI API."""
@@ -86,7 +88,7 @@ Categorii:
     
     try:
         response = client.chat.completions.create(
-            model="gpt-4",
+            model="llama-3.1-8b-instant",
             messages=[{"role": "user", "content": system_prompt}]
         )
         return response.choices[0].message.content.strip()
@@ -107,7 +109,6 @@ def parse_llm_response(response_text):
                 product, category = line.split(':', 1)
                 product = product.strip().lstrip('-').strip()
                 category = category.strip()
-                # Validate category
                 valid_categories = [
                     "Sistem de frânare",
                     "Suspensie și direcție",
@@ -144,13 +145,11 @@ def categorize_products(product_list):
     Reprocesses uncategorized products until all are categorized.
     Returns a pandas DataFrame with products and their assigned categories.
     """
-    # Initialize dictionary to store results
     categorized_products = {}
-    # Flatten the product list (assuming product_list is a list of lists)
     remaining_products = [product[0] for product in product_list if product[0]]
 
     iteration = 1
-    max_iterations = 3  # To prevent infinite loops
+    max_iterations = 4  # To prevent infinite loops
     while remaining_products and iteration <= max_iterations:
         batches = convert_to_batches(remaining_products, batch_size=50)
         new_remaining = []
@@ -247,7 +246,7 @@ Respond with only the category name from the following options:
     
     try:
         response = client.chat.completions.create(
-            model="mixtral-8x7b-32768",
+            model="llama-3.1-8b-instant",
             messages=[{"role": "user", "content": prompt}],
             temperature=0,
             max_tokens=100
@@ -278,7 +277,7 @@ Respond with only the product name, nothing else.
     
     try:
         response = client.chat.completions.create(
-            model="mixtral-8x7b-32768",
+            model="llama-3.1-8b-instant",
             messages=[{"role": "user", "content": prompt}],
             temperature=0,
             max_tokens=100
@@ -297,40 +296,38 @@ Respond with only the product name, nothing else.
         print(f"Error processing similar products: {e}")
         return "Error in processing"
 
-def process_files(product_type_path, sample_file_path, use_previous, previous_categorized_path, output_path):
-    """Main processing function to categorize and match products."""
-    # Step 1: Check if 'categorized_products.xlsx' exists
+def process_files(product_type_path, sample_file_path, use_previous, categorized_df):
+    """
+    Main processing function to categorize and match products.
+
+    Args:
+        product_type_path (str): Path to the Product Type Excel file.
+        sample_file_path (str): Path to the Sample Excel file.
+        use_previous (bool): Flag to use existing categorized DataFrame.
+        categorized_df (pd.DataFrame or None): Existing categorized DataFrame.
+
+    Returns:
+        pd.DataFrame: Processed results DataFrame.
+    """
+    # Step 1: Categorize products or use existing categories
     if use_previous:
-        if os.path.exists(previous_categorized_path):
-            print(f"'{previous_categorized_path}' exists. Loading categorized products.")
-            try:
-                df = pd.read_excel(previous_categorized_path)
-            except Exception as e:
-                print(f"Error loading '{previous_categorized_path}': {str(e)}")
-                raise e
+        if categorized_df is not None:
+            print("Using existing categorized DataFrame.")
+            df = categorized_df.copy()
         else:
-            raise FileNotFoundError(f"Previous categorized file '{previous_categorized_path}' not found.")
+            raise ValueError("No existing categorized data available.")
     else:
-        print(f"'{previous_categorized_path}' does not exist or not using previous file. Categorizing products from '{product_type_path}'.")
+        print(f"Categorizing products from '{product_type_path}'.")
         try:
             product_df = pd.read_excel(product_type_path, header=None)
             product_list = product_df.values.tolist()
         except Exception as e:
             print(f"Error loading '{product_type_path}': {str(e)}")
             raise e
-        
-        # Categorize products
-        final_df = categorize_products(product_list)
-        
-        # Save the result to a new Excel file
-        try:
-            final_df.to_excel(previous_categorized_path, index=False)
-            print(f"Categorization complete. Results saved to '{previous_categorized_path}'.")
-        except Exception as e:
-            print(f"Error saving the results: {str(e)}")
-            raise e
 
-        df = final_df  # Use the newly created dataframe
+        # Categorize products
+        df = categorize_products(product_list)
+        print("Categorization complete.")
 
     # Step 2: Read sample file into sample_df
     try:
@@ -368,16 +365,12 @@ def process_files(product_type_path, sample_file_path, use_previous, previous_ca
             matched_product = "No match found"
         
         results.append({
-            'product title': generated_title,
-            'product type': matched_product
+            'Product Title': generated_title,
+            'Product Type': matched_product
         })
 
-    # Create a new DataFrame with results
     results_df = pd.DataFrame(results)
-    # Save results to Excel
-    try:
-        results_df.to_excel(output_path, index=False)
-        print(f"Processing complete. Results saved to '{output_path}'.")
-    except Exception as e:
-        print(f"Error saving the results: {str(e)}")
-        raise e
+
+    print(f"Processing complete. Ready to download results.")
+
+    return results_df
